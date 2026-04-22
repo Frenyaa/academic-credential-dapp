@@ -1,31 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import type { CSSProperties } from "react";
+import { useContract } from "./hooks/useContract";
+import { ethers } from "ethers";
 
-// ─── Mock ethers (simulated for demo — replace with real ethers.js) ───────────
-const mockEthers = {
-  keccak256: (bytes) => {
-    let hash = 0;
-    const str = new TextDecoder().decode(bytes);
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash |= 0;
-    }
-    return "0x" + Math.abs(hash).toString(16).padStart(64, "0").slice(0, 64);
-  },
-  toUtf8Bytes: (str) => new TextEncoder().encode(str),
-  randomBytes32: () =>
-    "0x" + Array.from({ length: 32 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join(""),
-};
-
-// ─── Simulated blockchain state ───────────────────────────────
-const blockchainState = {
-  credentials: {},
-  authorizedIssuers: new Set(["0xDe1F...A3c2"]),
-  owner: "0xDe1F...A3c2",
-  txHistory: [],
-};
-
-const MOCK_ACCOUNTS = ["0xDe1F...A3c2", "0xAb3d...E7f1", "0x9c2B...D4e8"];
 
 // ─── Tabs ──────────────────────────────────────────────────────
 const TABS = ["issue", "verify", "revoke", "manage", "history"];
@@ -45,11 +22,11 @@ const TAB_ICONS = {
 };
 
 export default function App() {
-  const [account, setAccount] = useState(null);
+  const { provider, contract, account, isIssuer: hookIsIssuer, connect: realConnect } = useContract();
   const [isOwner, setIsOwner] = useState(false);
   const [isIssuer, setIsIssuer] = useState(false);
   const [activeTab, setActiveTab] = useState("verify");
-  const [status, setStatus] = useState(null); // {type: 'success'|'error'|'info', message}
+  const [status, setStatus] = useState<{ type: "success" | "error" | "info", message: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Issue form
@@ -57,40 +34,61 @@ export default function App() {
   const [courseName, setCourseName] = useState("");
   const [rawData, setRawData] = useState("");
   const [degree, setDegree] = useState("Cử nhân");
-  const [issuedCred, setIssuedCred] = useState(null);
+  const [issuedCred, setIssuedCred] = useState<{ credentialId: string, credHash: string } | null>(null);
 
   // Verify form
   const [verifyId, setVerifyId] = useState("");
-  const [verifyResult, setVerifyResult] = useState(null);
+  const [verifyResult, setVerifyResult] = useState<any>(null);
 
   // Revoke form
   const [revokeId, setRevokeId] = useState("");
 
   // Manage form
   const [newIssuerAddr, setNewIssuerAddr] = useState("");
-  const [issuerList, setIssuerList] = useState([...blockchainState.authorizedIssuers]);
+  const [issuerList] = useState<string[]>([]);
 
-  // History
-  const [txHistory, setTxHistory] = useState([]);
+  // History (Simulated for now derived from events or local storage if needed, but keeping it simple)
+  const [txHistory, setTxHistory] = useState<any[]>([]);
 
-  // ── Connect Wallet ──────────────────────────────────────────
-  const connect = useCallback((mockIdx = 0) => {
-    const addr = MOCK_ACCOUNTS[mockIdx];
-    setAccount(addr);
-    const owner = addr === blockchainState.owner;
-    setIsOwner(owner);
-    setIsIssuer(owner || blockchainState.authorizedIssuers.has(addr));
-    setStatus({ type: "success", message: `Đã kết nối: ${addr}` });
-    if (owner || blockchainState.authorizedIssuers.has(addr)) setActiveTab("issue");
-    else setActiveTab("verify");
-  }, []);
+  // ── Sync with Contract ───────────────────────────────────────
+  // useEffect 1: sync contract + role
+  useEffect(() => {
+    if (contract && account) {
+      setIsIssuer(hookIsIssuer);
+      checkOwner();
+    }
+  }, [contract, account, hookIsIssuer]);
+
+  // useEffect 2: reset UI khi đổi account
+  useEffect(() => {
+    setVerifyResult(null);
+    setIssuedCred(null);
+  }, [account]);
+
+  const checkOwner = async () => {
+    if (!contract) return;
+    try {
+      const owner = await contract.owner();
+      setIsOwner(owner.toLowerCase() === account?.toLowerCase());
+    } catch (e) {
+      console.error("Lỗi kiểm tra owner:", e);
+    }
+  };
+
+  const connect = async () => {
+    try {
+      setLoading(true);
+      await realConnect();
+      setStatus({ type: "success", message: "Đã kết nối ví thành công!" });
+    } catch (e: any) {
+      setStatus({ type: "error", message: e.message || "Không thể kết nối ví." });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const disconnect = () => {
-    setAccount(null);
-    setIsOwner(false);
-    setIsIssuer(false);
-    setActiveTab("verify");
-    setStatus(null);
+    window.location.reload(); // Simple way to reset ethers state for demo
   };
 
   // ── Issue Credential ────────────────────────────────────────
@@ -99,41 +97,56 @@ export default function App() {
       setStatus({ type: "error", message: "Vui lòng điền đầy đủ thông tin." });
       return;
     }
-    setLoading(true);
-    setStatus({ type: "info", message: "Đang gửi giao dịch lên Blockchain..." });
-    await new Promise((r) => setTimeout(r, 1200));
+    if (!contract) return;
 
-    const credHash = mockEthers.keccak256(mockEthers.toUtf8Bytes(rawData));
-    const credentialId = mockEthers.randomBytes32();
-    const now = Math.floor(Date.now() / 1000);
+    try {
+      setLoading(true);
+      setStatus({ type: "info", message: "Đang yêu cầu chữ ký ví..." });
 
-    blockchainState.credentials[credentialId] = {
-      credentialHash: credHash,
-      issuer: account,
-      studentName,
-      courseName,
-      degree,
-      issueDate: now,
-      isRevoked: false,
-    };
+      // Tính hash dùng contract utility (hoặc ethers)
+      const credHash = ethers.keccak256(ethers.toUtf8Bytes(rawData));
 
-    const tx = {
-      type: "CredentialIssued",
-      credentialId,
-      studentName,
-      courseName,
-      degree,
-      issuer: account,
-      timestamp: now,
-      txHash: mockEthers.randomBytes32(),
-    };
-    blockchainState.txHistory.unshift(tx);
-    setTxHistory([...blockchainState.txHistory]);
+      const tx = await contract.issueCredential(studentName, `${degree} - ${courseName}`, credHash);
+      setStatus({ type: "info", message: "Giao dịch đang được xử lý trên Blockchain..." });
 
-    setIssuedCred({ credentialId, credHash });
-    setStatus({ type: "success", message: "Cấp chứng chỉ thành công!" });
-    setStudentName(""); setCourseName(""); setRawData(""); setDegree("Cử nhân");
-    setLoading(false);
+      const receipt = await tx.wait();
+
+      // Lấy ID từ event log
+      const iface = contract.interface;
+      let credentialId = "N/A";
+      for (const log of receipt.logs) {
+        try {
+          const parsed = iface.parseLog(log);
+          if (parsed?.name === "CredentialIssued") {
+            credentialId = parsed.args[0];
+            break;
+          }
+        } catch { }
+      }
+
+      setIssuedCred({ credentialId, credHash });
+      setVerifyResult(null);
+      setVerifyId(credentialId);
+      setActiveTab("verify");
+      setStatus({ type: "success", message: "Phát hành chứng chỉ thành công!" });
+      setStudentName(""); setCourseName(""); setRawData(""); setDegree("Cử nhân");
+
+      // Add to history
+      setTxHistory(prev => [{
+        type: "CredentialIssued",
+        credentialId,
+        studentName,
+        courseName: `${degree} - ${courseName}`,
+        timestamp: Math.floor(Date.now() / 1000),
+        txHash: receipt.hash
+      }, ...prev]);
+
+    } catch (e: any) {
+      console.error(e);
+      setStatus({ type: "error", message: e.reason || e.message || "Giao dịch thất bại." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ── Verify Credential ───────────────────────────────────────
@@ -142,20 +155,42 @@ export default function App() {
       setStatus({ type: "error", message: "Vui lòng nhập Credential ID." });
       return;
     }
-    setLoading(true);
-    setVerifyResult(null);
-    setStatus({ type: "info", message: "Đang truy vấn Blockchain..." });
-    await new Promise((r) => setTimeout(r, 900));
-
-    const cred = blockchainState.credentials[verifyId.trim()];
-    if (!cred) {
-      setStatus({ type: "error", message: "Credential ID không tồn tại trên Blockchain." });
-      setLoading(false);
+    if (!ethers.isHexString(verifyId.trim(), 32)) {
+      setStatus({
+        type: "error",
+        message: "Credential ID phải là bytes32 hợp lệ (0x + 64 ký tự hex). KHÔNG phải địa chỉ contract."
+      });
       return;
     }
-    setVerifyResult({ isValid: !cred.isRevoked, credential: cred });
-    setStatus(null);
-    setLoading(false);
+    if (!contract) {
+      setStatus({ type: "error", message: "Vui lòng kết nối ví để xác thực (hoặc thiết lập Read-only provider)." });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setVerifyResult(null);
+      setStatus({ type: "info", message: "Đang truy vấn Blockchain..." });
+
+      const [isValid, cred] = await contract.verifyCredential(verifyId.trim());
+
+      setVerifyResult({
+        isValid,
+        credential: {
+          studentName: cred.studentName,
+          courseName: cred.courseName,
+          issuer: cred.issuer,
+          issueDate: Number(cred.issueDate),
+          isRevoked: cred.isRevoked,
+          credentialHash: cred.credentialHash
+        }
+      });
+      setStatus(null);
+    } catch (e: any) {
+      setStatus({ type: "error", message: "ID không tồn tại hoặc lỗi mạng." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ── Revoke Credential ───────────────────────────────────────
@@ -164,90 +199,71 @@ export default function App() {
       setStatus({ type: "error", message: "Vui lòng nhập Credential ID cần thu hồi." });
       return;
     }
-    const cred = blockchainState.credentials[revokeId.trim()];
-    if (!cred) {
-      setStatus({ type: "error", message: "Credential ID không tồn tại." });
-      return;
-    }
-    if (cred.issuer !== account) {
-      setStatus({ type: "error", message: "Chỉ issuer gốc mới có quyền thu hồi." });
-      return;
-    }
-    if (cred.isRevoked) {
-      setStatus({ type: "error", message: "Chứng chỉ này đã bị thu hồi trước đó." });
-      return;
-    }
-    setLoading(true);
-    setStatus({ type: "info", message: "Đang gửi giao dịch thu hồi..." });
-    await new Promise((r) => setTimeout(r, 1000));
+    if (!contract) return;
 
-    blockchainState.credentials[revokeId.trim()].isRevoked = true;
-    const tx = {
-      type: "CredentialRevoked",
-      credentialId: revokeId.trim(),
-      issuer: account,
-      timestamp: Math.floor(Date.now() / 1000),
-      txHash: mockEthers.randomBytes32(),
-    };
-    blockchainState.txHistory.unshift(tx);
-    setTxHistory([...blockchainState.txHistory]);
-    setStatus({ type: "success", message: "Thu hồi chứng chỉ thành công!" });
-    setRevokeId("");
-    setLoading(false);
+    try {
+      setLoading(true);
+      setStatus({ type: "info", message: "Đang gửi giao dịch thu hồi..." });
+
+      const tx = await contract.revokeCredential(revokeId.trim());
+      const receipt = await tx.wait();
+
+      setStatus({ type: "success", message: "Thu hồi chứng chỉ thành công!" });
+      setRevokeId("");
+
+      setTxHistory(prev => [{
+        type: "CredentialRevoked",
+        credentialId: revokeId.trim(),
+        timestamp: Math.floor(Date.now() / 1000),
+        txHash: receipt.hash
+      }, ...prev]);
+
+    } catch (e: any) {
+      setStatus({ type: "error", message: e.reason || e.message || "Không thể thu hồi." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ── Manage Issuers ──────────────────────────────────────────
   const authorizeIssuer = async () => {
-    if (!newIssuerAddr.trim()) return;
-    setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
-    blockchainState.authorizedIssuers.add(newIssuerAddr.trim());
-    setIssuerList([...blockchainState.authorizedIssuers]);
-    const tx = {
-      type: "IssuerAuthorized",
-      issuer: newIssuerAddr.trim(),
-      by: account,
-      timestamp: Math.floor(Date.now() / 1000),
-      txHash: mockEthers.randomBytes32(),
-    };
-    blockchainState.txHistory.unshift(tx);
-    setTxHistory([...blockchainState.txHistory]);
-    setStatus({ type: "success", message: `Đã cấp quyền cho ${newIssuerAddr.trim()}` });
-    setNewIssuerAddr("");
-    setLoading(false);
+    if (!newIssuerAddr.trim() || !contract) return;
+    try {
+      setLoading(true);
+      const tx = await contract.authorizeIssuer(newIssuerAddr.trim());
+      await tx.wait();
+      setStatus({ type: "success", message: `Đã cấp quyền cho ${newIssuerAddr.trim()}` });
+      setNewIssuerAddr("");
+    } catch (e: any) {
+      setStatus({ type: "error", message: e.reason || e.message });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const revokeIssuer = async (addr) => {
-    if (addr === blockchainState.owner) {
-      setStatus({ type: "error", message: "Không thể thu hồi quyền của Owner." });
-      return;
+  const revokeIssuer = async (addr: string) => {
+    if (!contract) return;
+    try {
+      setLoading(true);
+      const tx = await contract.revokeIssuer(addr);
+      await tx.wait();
+      setStatus({ type: "success", message: `Đã thu hồi quyền của ${addr}` });
+    } catch (e: any) {
+      setStatus({ type: "error", message: e.reason || e.message });
+    } finally {
+      setLoading(false);
     }
-    setLoading(true);
-    await new Promise((r) => setTimeout(r, 600));
-    blockchainState.authorizedIssuers.delete(addr);
-    setIssuerList([...blockchainState.authorizedIssuers]);
-    const tx = {
-      type: "IssuerRevoked",
-      issuer: addr,
-      by: account,
-      timestamp: Math.floor(Date.now() / 1000),
-      txHash: mockEthers.randomBytes32(),
-    };
-    blockchainState.txHistory.unshift(tx);
-    setTxHistory([...blockchainState.txHistory]);
-    setStatus({ type: "success", message: `Đã thu hồi quyền của ${addr}` });
-    setLoading(false);
   };
 
   // ── Copy to clipboard ───────────────────────────────────────
   const copy = (text) => {
-    navigator.clipboard?.writeText(text).catch(() => {});
+    navigator.clipboard?.writeText(text).catch(() => { });
     setStatus({ type: "info", message: "Đã sao chép!" });
     setTimeout(() => setStatus(null), 1500);
   };
 
   const hashPreview = rawData
-    ? mockEthers.keccak256(mockEthers.toUtf8Bytes(rawData))
+    ? ethers.keccak256(ethers.toUtf8Bytes(rawData))
     : null;
 
   // ── UI ──────────────────────────────────────────────────────
@@ -262,26 +278,22 @@ export default function App() {
           <div style={s.logo}>⬡</div>
           <div>
             <div style={s.logoTitle}>CredentialChain</div>
-            <div style={s.logoSub}>Academic Registry · Sepolia Testnet</div>
+            <div style={s.logoSub}>Academic Registry · Localhost Node</div>
           </div>
         </div>
         <div style={s.headerRight}>
           {account ? (
             <div style={s.walletBox}>
               <div style={s.walletDot} />
-              <span style={s.walletAddr}>{account}</span>
+              <span style={s.walletAddr}>{account.slice(0, 6)}...{account.slice(-4)}</span>
               {isOwner && <span style={s.tagOwner}>OWNER</span>}
               {isIssuer && !isOwner && <span style={s.tagIssuer}>ISSUER</span>}
               <button style={s.btnGhost} onClick={disconnect}>Ngắt kết nối</button>
             </div>
           ) : (
-            <div style={{ display: "flex", gap: 8 }}>
-              {MOCK_ACCOUNTS.map((a, i) => (
-                <button key={i} style={i === 0 ? s.btnConnect : s.btnGhost} onClick={() => connect(i)}>
-                  {i === 0 ? "🦊 Kết nối" : `Ví ${i + 1}`}
-                </button>
-              ))}
-            </div>
+            <button style={s.btnConnect} onClick={connect}>
+              🦊 Kết nối MetaMask
+            </button>
           )}
         </div>
       </header>
@@ -289,10 +301,10 @@ export default function App() {
       {/* Stats bar */}
       <div style={s.statsBar}>
         {[
-          { label: "Tổng chứng chỉ", value: Object.keys(blockchainState.credentials).length },
-          { label: "Đã thu hồi", value: Object.values(blockchainState.credentials).filter(c => c.isRevoked).length },
-          { label: "Authorized Issuers", value: blockchainState.authorizedIssuers.size },
-          { label: "Transactions", value: blockchainState.txHistory.length },
+          { label: "Tổng chứng chỉ", value: txHistory.filter(t => t.type === "CredentialIssued").length },
+          { label: "Đã thu hồi", value: txHistory.filter(t => t.type === "CredentialRevoked").length },
+          { label: "Authorized Issuers", value: issuerList.length || 1 },
+          { label: "Transactions", value: txHistory.length },
         ].map((stat, i) => (
           <div key={i} style={s.statItem}>
             <span style={s.statValue}>{stat.value}</span>
@@ -338,7 +350,7 @@ export default function App() {
             <div style={s.formGrid}>
               <div style={s.field}>
                 <label style={s.label}>Tên sinh viên <span style={s.req}>*</span></label>
-                <input style={s.input} placeholder="Nguyễn Văn A"
+                <input style={s.input} placeholder="Họ Tên"
                   value={studentName} onChange={e => setStudentName(e.target.value)} />
               </div>
               <div style={s.field}>
@@ -351,7 +363,7 @@ export default function App() {
               </div>
               <div style={{ ...s.field, gridColumn: "1/-1" }}>
                 <label style={s.label}>Tên khóa học / ngành <span style={s.req}>*</span></label>
-                <input style={s.input} placeholder="Khoa học Máy tính — Đại học Bách Khoa Hà Nội"
+                <input style={s.input} placeholder="Khóa học / Ngành"
                   value={courseName} onChange={e => setCourseName(e.target.value)} />
               </div>
               <div style={{ ...s.field, gridColumn: "1/-1" }}>
@@ -411,19 +423,6 @@ export default function App() {
             </div>
 
             {/* Demo helper: list known credentials */}
-            {Object.keys(blockchainState.credentials).length > 0 && (
-              <div style={s.demoBox}>
-                <div style={s.demoTitle}>Chứng chỉ trên Blockchain (để test):</div>
-                {Object.entries(blockchainState.credentials).map(([id, c]) => (
-                  <button key={id} style={s.demoItem} onClick={() => setVerifyId(id)}>
-                    <span style={{ color: c.isRevoked ? "#ef4444" : "#22c55e" }}>
-                      {c.isRevoked ? "✕" : "✓"}
-                    </span>
-                    &nbsp;{c.studentName} — {c.courseName.slice(0, 30)}...
-                  </button>
-                ))}
-              </div>
-            )}
 
             {verifyResult && (
               <div style={{ ...s.verifyCard, borderColor: verifyResult.isValid ? "#22c55e" : "#ef4444" }}>
@@ -481,19 +480,6 @@ export default function App() {
             </div>
 
             {/* Issued-by-me list */}
-            {account && Object.entries(blockchainState.credentials).filter(([, c]) => c.issuer === account && !c.isRevoked).length > 0 && (
-              <div style={s.demoBox}>
-                <div style={s.demoTitle}>Chứng chỉ bạn đã cấp (chưa thu hồi):</div>
-                {Object.entries(blockchainState.credentials)
-                  .filter(([, c]) => c.issuer === account && !c.isRevoked)
-                  .map(([id, c]) => (
-                    <button key={id} style={s.demoItem} onClick={() => setRevokeId(id)}>
-                      <span style={{ color: "#22c55e" }}>✓</span>
-                      &nbsp;{c.studentName} — {c.courseName.slice(0, 40)}
-                    </button>
-                  ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -520,9 +506,10 @@ export default function App() {
                   <div style={s.issuerAddr}>
                     <div style={{ ...s.walletDot, background: "#22c55e" }} />
                     {addr}
-                    {addr === blockchainState.owner && <span style={s.tagOwner}>OWNER</span>}
+                    {/* Tag OWNER if applicable — already handled by isOwner state but keeping logic locally consistent */}
+                    {addr.toLowerCase() === account?.toLowerCase() && <span style={s.tagOwner}>OWNER</span>}
                   </div>
-                  {addr !== blockchainState.owner && (
+                  {addr.toLowerCase() !== account?.toLowerCase() && (
                     <button style={s.btnRevoke} onClick={() => revokeIssuer(addr)}>
                       Thu Hồi
                     </button>
@@ -571,20 +558,20 @@ export default function App() {
             <div style={s.connectIcon}>⬡</div>
             <div style={s.connectTitle}>Kết nối ví để tiếp tục</div>
             <div style={s.connectDesc}>Cần kết nối MetaMask để sử dụng tính năng này.</div>
-            <button style={s.btnPrimary} onClick={() => connect(0)}>🦊 Kết nối MetaMask</button>
+            <button style={s.btnPrimary} onClick={() => connect()}>🦊 Kết nối MetaMask</button>
           </div>
         )}
       </main>
 
       <footer style={s.footer}>
-        CredentialChain · Smart Contract: 0xCd3e...F8a1 · Sepolia Testnet · v2.0.0
+        CredentialChain · Smart Contract: 0x5FbD...8aa3 · Localhost 8545 · v2.0.0
       </footer>
     </div>
   );
 }
 
 // ─── Styles ────────────────────────────────────────────────────
-const s = {
+const s: Record<string, CSSProperties> = {
   root: { minHeight: "100vh", background: "#0a0f1a", color: "#e2e8f0", fontFamily: "'IBM Plex Mono', 'Courier New', monospace", position: "relative", overflow: "hidden" },
   bgGrid: { position: "fixed", inset: 0, backgroundImage: "linear-gradient(rgba(59,130,246,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,0.04) 1px, transparent 1px)", backgroundSize: "40px 40px", pointerEvents: "none", zIndex: 0 },
 
