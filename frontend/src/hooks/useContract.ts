@@ -29,7 +29,7 @@ export function useContract() {
 
     // Hardhat defaults to 31337. Some MetaMask setups use 1337 for localhost.
     if (chainId !== 31337n && chainId !== 1337n) {
-      const msg = `LỖI MẠNG: Bạn đang hiển thị Chain ID ${chainId}. Vui lòng chuyển MetaMask sang mạng Localhost (Chain ID: 31337).`;
+      const msg = `Lỗi mạng: Bạn đang hiển thị Chain ID ${chainId}. Vui lòng chuyển MetaMask sang mạng Localhost (Chain ID: 31337).`;
       alert(msg);
       console.error(msg);
       return; // STOP HERE to avoid BAD_DATA error
