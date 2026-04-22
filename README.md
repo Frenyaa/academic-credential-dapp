@@ -8,6 +8,7 @@ Try running some of the following tasks:
 cd academic-credential-dapp
 npm install
 npx hardhat node
+"Chạy riêng terminal academic-credential-dapp"
 npx hardhat run scripts/deploy.ts --network localhost
 
 cd frontend
