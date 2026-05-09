@@ -36,6 +36,18 @@ export default function App() {
   const [degree, setDegree] = useState("Cử nhân");
   const [issuedCred, setIssuedCred] = useState<{ credentialId: string, credHash: string } | null>(null);
 
+  // Image upload
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imageHash, setImageHash] = useState<string | null>(null);
+
+  // Certificate file upload (PDF/DOCX/...)
+  const [certFile, setCertFile] = useState<File | null>(null);
+  const [certHash, setCertHash] = useState<string | null>(null);
+  const [certHashLoading, setCertHashLoading] = useState(false);
+  const [certBlobUrl, setCertBlobUrl] = useState<string | null>(null);
+  const [showPdfPreview, setShowPdfPreview] = useState(false);
+
   // Verify form
   const [verifyId, setVerifyId] = useState("");
   const [verifyResult, setVerifyResult] = useState<any>(null);
@@ -91,6 +103,72 @@ export default function App() {
     window.location.reload(); // Simple way to reset ethers state for demo
   };
 
+  // ── Handle Image Upload ─────────────────────────────────────
+  const handleImageUpload = async (file: File) => {
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target?.result as string;
+      setImagePreview(dataUrl);
+      // Hash the image bytes
+      const arrayBuffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = "0x" + hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+      setImageHash(hashHex);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearImage = () => {
+    setImageFile(null);
+    setImagePreview(null);
+    setImageHash(null);
+  };
+
+  // ── Handle Certificate File Upload ─────────────────────────
+  const handleCertFileUpload = async (file: File) => {
+    const MAX_MB = 20;
+    if (file.size > MAX_MB * 1024 * 1024) {
+      setStatus({ type: "error", message: `File quá lớn. Tối đa ${MAX_MB} MB.` });
+      return;
+    }
+    // Revoke old blob URL if any
+    if (certBlobUrl) URL.revokeObjectURL(certBlobUrl);
+    const blobUrl = URL.createObjectURL(file);
+    setCertBlobUrl(blobUrl);
+    setShowPdfPreview(false);
+    setCertFile(file);
+    setCertHash(null);
+    setCertHashLoading(true);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = "0x" + hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+      setCertHash(hashHex);
+    } finally {
+      setCertHashLoading(false);
+    }
+  };
+
+  const clearCertFile = () => {
+    if (certBlobUrl) URL.revokeObjectURL(certBlobUrl);
+    setCertFile(null);
+    setCertHash(null);
+    setCertBlobUrl(null);
+    setShowPdfPreview(false);
+  };
+
+  const getCertFileIcon = (name: string) => {
+    const ext = name.split(".").pop()?.toLowerCase();
+    if (ext === "pdf") return "📄";
+    if (["doc", "docx"].includes(ext || "")) return "📝";
+    if (["xls", "xlsx"].includes(ext || "")) return "📊";
+    if (["png", "jpg", "jpeg", "webp"].includes(ext || "")) return "🖼";
+    return "📎";
+  };
+
   // ── Issue Credential ────────────────────────────────────────
   const issueCredential = async () => {
     if (!studentName || !courseName || !rawData) {
@@ -103,8 +181,11 @@ export default function App() {
       setLoading(true);
       setStatus({ type: "info", message: "Đang yêu cầu chữ ký ví..." });
 
-      // Tính hash dùng contract utility (hoặc ethers)
-      const credHash = ethers.keccak256(ethers.toUtf8Bytes(rawData));
+      // Tính hash: kết hợp rawData + imageHash + certHash (nếu có)
+      let combinedData = rawData;
+      if (imageHash) combinedData += "|img:" + imageHash;
+      if (certHash) combinedData += "|file:" + certHash;
+      const credHash = ethers.keccak256(ethers.toUtf8Bytes(combinedData));
 
       const tx = await contract.issueCredential(studentName, `${degree} - ${courseName}`, credHash);
       setStatus({ type: "info", message: "Giao dịch đang được xử lý trên Blockchain..." });
@@ -130,6 +211,8 @@ export default function App() {
       setActiveTab("verify");
       setStatus({ type: "success", message: "Phát hành chứng chỉ thành công!" });
       setStudentName(""); setCourseName(""); setRawData(""); setDegree("Cử nhân");
+      clearImage();
+      clearCertFile();
 
       // Add to history
       setTxHistory(prev => [{
@@ -262,8 +345,11 @@ export default function App() {
     setTimeout(() => setStatus(null), 1500);
   };
 
-  const hashPreview = rawData
-    ? ethers.keccak256(ethers.toUtf8Bytes(rawData))
+  const combinedForPreview = rawData
+    ? rawData + (imageHash ? "|img:" + imageHash : "") + (certHash ? "|file:" + certHash : "")
+    : null;
+  const hashPreview = combinedForPreview
+    ? ethers.keccak256(ethers.toUtf8Bytes(combinedForPreview))
     : null;
 
   // ── UI ──────────────────────────────────────────────────────
@@ -377,6 +463,98 @@ export default function App() {
                     <span style={s.hashVal}>{hashPreview}</span>
                     <button style={s.copyBtn} onClick={() => copy(hashPreview)}>⎘</button>
                   </div>
+                )}
+              </div>
+
+              {/* ── Image Upload ── */}
+              <div style={{ ...s.field, gridColumn: "1/-1" }}>
+                <label style={s.label}>Ảnh chứng chỉ / Ảnh sinh viên <span style={{ color: "#475569", fontSize: 10 }}>(tuỳ chọn)</span></label>
+                {!imagePreview ? (
+                  <label style={s.uploadZone}
+                    onDragOver={e => { e.preventDefault(); }}
+                    onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f && f.type.startsWith("image/")) handleImageUpload(f); }}
+                  >
+                    <input type="file" accept="image/*" style={{ display: "none" }}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) handleImageUpload(f); }} />
+                    <div style={s.uploadIcon}>🖼</div>
+                    <div style={s.uploadText}>Kéo thả hoặc <span style={{ color: "#3b82f6" }}>chọn ảnh</span></div>
+                    <div style={s.uploadSub}>PNG, JPG, WEBP — tối đa 10 MB</div>
+                  </label>
+                ) : (
+                  <div style={s.imagePreviewBox}>
+                    <img src={imagePreview} alt="preview" style={s.imagePreviewImg} />
+                    <div style={s.imagePreviewInfo}>
+                      <div style={s.imageFileName}>📎 {imageFile?.name}</div>
+                      <div style={s.imageSize}>{imageFile ? (imageFile.size / 1024).toFixed(1) + " KB" : ""}</div>
+                      {imageHash && (
+                        <div style={s.imageHashBox}>
+                          <span style={s.hashLabel}>SHA-256</span>
+                          <span style={{ ...s.hashVal, fontSize: 9 }}>{imageHash.slice(0, 42)}...</span>
+                          <button style={s.copyBtn} onClick={() => copy(imageHash!)}>⎘</button>
+                        </div>
+                      )}
+                      <button style={s.btnRemoveImage} onClick={clearImage}>✕ Xoá ảnh</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Certificate File Upload ── */}
+              <div style={{ ...s.field, gridColumn: "1/-1" }}>
+                <label style={s.label}>File chứng chỉ gốc <span style={{ color: "#475569", fontSize: 10 }}>(tuỳ chọn — PDF, DOCX, ...)</span></label>
+                {!certFile ? (
+                  <label style={s.certUploadZone}
+                    onDragOver={e => { e.preventDefault(); }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      const f = e.dataTransfer.files[0];
+                      if (f) handleCertFileUpload(f);
+                    }}
+                  >
+                    <input type="file"
+                      accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      style={{ display: "none" }}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) handleCertFileUpload(f); }} />
+                    <div style={s.certUploadIcon}>📂</div>
+                    <div style={s.uploadText}>Kéo thả hoặc <span style={{ color: "#a78bfa" }}>chọn file</span></div>
+                    <div style={s.uploadSub}>PDF, DOCX, XLSX, ảnh — tối đa 20 MB</div>
+                  </label>
+                ) : (
+                  <>
+                    <div style={s.certFileBox}>
+                      <div style={s.certFileIcon}>{getCertFileIcon(certFile.name)}</div>
+                      <div style={s.certFileInfo}>
+                        <div style={s.certFileName}>{certFile.name}</div>
+                        <div style={s.certFileSize}>{(certFile.size / 1024).toFixed(1)} KB · {certFile.type || "unknown"}</div>
+                        {certHashLoading && <div style={s.certHashLoading}>⟳ Đang tính hash...</div>}
+                        {certHash && !certHashLoading && (
+                          <div style={s.certHashBox}>
+                            <span style={{ ...s.hashLabel, color: "#a78bfa" }}>SHA-256</span>
+                            <span style={{ ...s.hashVal, fontSize: 9, color: "#c4b5fd" }}>{certHash.slice(0, 42)}...</span>
+                            <button style={s.copyBtn} onClick={() => copy(certHash!)}>⎘</button>
+                          </div>
+                        )}
+                        {certBlobUrl && certFile.type === "application/pdf" && (
+                          <button
+                            style={{ ...s.btnRemoveImage, border: "1px solid rgba(167,139,250,0.4)", color: "#a78bfa", marginTop: 2 }}
+                            onClick={() => setShowPdfPreview(p => !p)}
+                          >
+                            {showPdfPreview ? "🗕 Ẩn PDF" : "📄 Xem PDF"}
+                          </button>
+                        )}
+                      </div>
+                      <button style={s.btnRemoveCert} onClick={clearCertFile}>✕</button>
+                    </div>
+                    {showPdfPreview && certBlobUrl && (
+                      <div style={s.pdfPreviewWrap}>
+                        <iframe
+                          src={certBlobUrl}
+                          style={s.pdfPreviewFrame}
+                          title="PDF Preview"
+                        />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -626,6 +804,33 @@ const s: Record<string, CSSProperties> = {
   btnRevoke: { background: "none", border: "1px solid #dc2626", borderRadius: 4, color: "#f87171", padding: "5px 12px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" },
 
   spinner: { display: "inline-block", animation: "spin 1s linear infinite" },
+
+  uploadZone: { display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", gap: 6, border: "2px dashed rgba(59,130,246,0.3)", borderRadius: 8, padding: "28px 20px", cursor: "pointer", background: "rgba(59,130,246,0.04)", transition: "border-color 0.2s", textAlign: "center" as const },
+  uploadIcon: { fontSize: 32, marginBottom: 4 },
+  uploadText: { fontSize: 13, color: "#94a3b8" },
+  uploadSub: { fontSize: 11, color: "#475569" },
+
+  imagePreviewBox: { display: "flex", gap: 16, background: "rgba(30,41,59,0.6)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: 8, padding: 12, alignItems: "flex-start" },
+  imagePreviewImg: { width: 100, height: 100, objectFit: "cover" as const, borderRadius: 6, border: "1px solid rgba(255,255,255,0.1)", flexShrink: 0 },
+  imagePreviewInfo: { flex: 1, display: "flex", flexDirection: "column" as const, gap: 6, minWidth: 0 },
+  imageFileName: { fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const },
+  imageSize: { fontSize: 11, color: "#475569" },
+  imageHashBox: { display: "flex", alignItems: "center", gap: 6, background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: 4, padding: "5px 8px" },
+  btnRemoveImage: { background: "none", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 4, color: "#f87171", padding: "4px 10px", fontSize: 11, cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-start" as const },
+
+  certUploadZone: { display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", gap: 6, border: "2px dashed rgba(167,139,250,0.35)", borderRadius: 8, padding: "28px 20px", cursor: "pointer", background: "rgba(139,92,246,0.04)", transition: "border-color 0.2s", textAlign: "center" as const },
+  certUploadIcon: { fontSize: 32, marginBottom: 4 },
+  certFileBox: { display: "flex", gap: 14, background: "rgba(30,20,60,0.6)", border: "1px solid rgba(139,92,246,0.25)", borderRadius: 8, padding: "12px 14px", alignItems: "center" },
+  certFileIcon: { fontSize: 36, flexShrink: 0 },
+  certFileInfo: { flex: 1, display: "flex", flexDirection: "column" as const, gap: 4, minWidth: 0 },
+  certFileName: { fontSize: 13, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, fontWeight: 600 },
+  certFileSize: { fontSize: 11, color: "#64748b" },
+  certHashLoading: { fontSize: 11, color: "#a78bfa", animation: "spin 1s linear infinite" },
+  certHashBox: { display: "flex", alignItems: "center", gap: 6, background: "rgba(139,92,246,0.1)", border: "1px solid rgba(139,92,246,0.25)", borderRadius: 4, padding: "5px 8px" },
+  btnRemoveCert: { background: "none", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 6, color: "#f87171", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 12, flexShrink: 0 },
+
+  pdfPreviewWrap: { marginTop: 10, border: "1px solid rgba(139,92,246,0.3)", borderRadius: 8, overflow: "hidden", background: "#1a1030" },
+  pdfPreviewFrame: { width: "100%", height: 520, border: "none", display: "block" },
 
   successCard: { marginTop: 24, background: "rgba(20,83,45,0.2)", border: "1px solid #16a34a", borderRadius: 8, overflow: "hidden" },
   successHeader: { background: "#14532d", padding: "10px 16px", fontSize: 13, color: "#86efac", letterSpacing: "0.04em" },
